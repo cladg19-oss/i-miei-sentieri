@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>I Miei Sentieri</title>
+<link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+/>
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+
+    <div class="app">
+
+        <aside class="sidebar">
+            <div class="logo">
+                <span>🥾</span>
+                <h1>I Miei Sentieri</h1>
+            </div>
+
+            <nav>
+                <button class="menu-item active">🏠 Home</button>
+                <button class="menu-item">🗺️ Mappa</button>
+                <button class="menu-item">📂 Archivio GPX</button>
+                <button class="menu-item">📊 Statistiche</button>
+                <button class="menu-item">⭐ Preferiti</button>
+                <button class="menu-item">⚙️ Impostazioni</button>
+            </nav>
+        </aside>
+
+        <main class="main-content">
+
+            <header class="topbar">
+                <div>
+                    <p class="small-title">Dashboard personale</p>
+                    <h2>Benvenuto nei tuoi sentieri</h2>
+                </div>
+
+                <button class="import-button" id="importButton">Importa GPX</button>
+
+<input
+    type="file"
+    id="gpxInput"
+    accept=".gpx,application/gpx+xml"
+    multiple
+    hidden
+>
+            </header>
+
+            <section class="stats-grid">
+
+                <article class="stat-card">
+                    <span class="stat-icon">🥾</span>
+                    <div>
+                        <p>Percorsi salvati</p>
+                        <strong id="routeCount">0</strong>
+                    </div>
+                </article>
+
+                <article class="stat-card">
+                    <span class="stat-icon">📍</span>
+                    <div>
+                        <p>Chilometri totali</p>
+                        <strong id="totalDistance">0 km</strong>
+                    </div>
+                </article>
+
+                <article class="stat-card">
+                    <span class="stat-icon">⛰️</span>
+                    <div>
+                        <p>Dislivello totale</p>
+                        <strong>0 m</strong>
+                    </div>
+                </article>
+
+                <article class="stat-card">
+                    <span class="stat-icon">🧭</span>
+                    <div>
+                        <p>Zone esplorate</p>
+                        <strong>0</strong>
+                    </div>
+                </article>
+
+            </section>
+
+            <section class="content-grid">
+
+                <div class="map-card">
+                    <div class="section-heading">
+                        <div>
+                            <p class="small-title">Panoramica</p>
+                            <h3>Mappa dei percorsi</h3>
+                        </div>
+
+                        <button class="secondary-button" id="showAllButton">
+    Mostra tutti
+</button>>
+                    </div>
+
+                    <div id="map"></div>
+                </div>
+
+                <div class="recent-card">
+                    <div class="section-heading">
+                        <div>
+                            <p class="small-title">Ultime attività</p>
+                            <h3>Percorsi recenti</h3>
+                        </div>
+                    </div>
+
+                    <<div id="recentRoutes" class="routes-list">
+    <div class="empty-state" id="emptyState">
+        <span>📂</span>
+        <p>I tuoi percorsi GPX appariranno qui.</p>
+    </div>
+</div>
+                </div>
+
+            </section>
+
+        </main>
+
+    </div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="script.js"></script>
+
+</body>
+</html>
