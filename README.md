@@ -1,2 +1,2 @@
-# I Miei Sentieri
-Apri la cartella in Visual Studio Code e avvia `index.html` con Live Server.
+# I Miei Sentieri v1.1
+Versione modulare con note, data escursione e preferiti.
