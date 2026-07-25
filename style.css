@@ -9,3 +9,10 @@
 #map{width:100%;min-height:430px;background:#d9dfdc}
 .leaflet-container{font-family:Arial,sans-serif}
 @media(max-width:700px){#fullMapHost #map{height:65vh;min-height:420px}.sidebar{padding:18px 14px}.logo{margin-bottom:18px}nav{display:grid;grid-template-columns:repeat(2,1fr)}.menu-item{padding:12px 10px}}
+/* Versione 5.1: scheda completa del percorso */
+.route-info-panel{width:min(720px,100%)}
+.color-picker-row{display:flex;align-items:center;gap:12px;padding:8px 10px;border:1px solid #d9e4dd;border-radius:10px;background:#fff}
+.color-picker-row input[type="color"]{width:54px;height:36px;padding:0;border:0;background:transparent;cursor:pointer}
+.color-picker-row span{margin:0;font-family:monospace;color:#475569}
+.route-item.selected{outline:2px solid #2f7d4f;background:#eaf5ee}
+@media(max-width:650px){.route-info-panel{padding:22px}.route-info-grid{grid-template-columns:1fr}}

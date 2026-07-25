@@ -48,6 +48,7 @@ function bindInterface() {
   $('closeInfoIcon').addEventListener('click', closeRouteInfo);
   $('closeInfoPanel').addEventListener('click', closeRouteInfo);
   $('saveRouteDetails').addEventListener('click', saveRouteDetails);
+  $('infoColor').addEventListener('input', event => { $('infoColorValue').textContent = event.target.value.toUpperCase(); });
   $('routeInfoOverlay').addEventListener('click', event => {
     if (event.target === $('routeInfoOverlay')) closeRouteInfo();
   });
@@ -162,7 +163,8 @@ function normalizeRoutes(items) {
     favorite: route.favorite === true,
     notes: route.notes || '',
     hikeDate: route.hikeDate || '',
-    createdAt: route.createdAt || Date.now()
+    createdAt: route.createdAt || Date.now(),
+    durationSeconds: Number(route.durationSeconds) || 0
   })).sort((a, b) => b.createdAt - a.createdAt);
 }
 
@@ -202,7 +204,8 @@ function parseGPX(text, fileName) {
   const points = nodes.map(node => ({
     lat: Number(node.getAttribute('lat')),
     lon: Number(node.getAttribute('lon')),
-    ele: node.querySelector('ele') ? Number(node.querySelector('ele').textContent) : null
+    ele: node.querySelector('ele') ? Number(node.querySelector('ele').textContent) : null,
+    time: node.querySelector('time')?.textContent?.trim() || null
   })).filter(point => Number.isFinite(point.lat) && Number.isFinite(point.lon));
   if (points.length < 2) throw new Error('Percorso non valido');
 
@@ -214,6 +217,8 @@ function parseGPX(text, fileName) {
       elevationGain += points[i].ele - points[i - 1].ele;
     }
   }
+  const validTimes = points.map(point => point.time ? Date.parse(point.time) : NaN).filter(Number.isFinite);
+  const durationSeconds = validTimes.length >= 2 ? Math.max(0, Math.round((validTimes[validTimes.length - 1] - validTimes[0]) / 1000)) : 0;
   const nameNode = xml.querySelector('trk > name') || xml.querySelector('rte > name');
   return {
     name: nameNode?.textContent?.trim() || fileName.replace(/\.gpx$/i, ''),
@@ -221,6 +226,7 @@ function parseGPX(text, fileName) {
     points,
     distanceKm,
     elevationGain: Math.round(elevationGain),
+    durationSeconds,
     zone: `${points[0].lat.toFixed(2)}, ${points[0].lon.toFixed(2)}`
   };
 }
@@ -324,6 +330,15 @@ function openRouteInfo(route) {
   $('infoElevation').textContent = `${Math.round(route.elevationGain || 0)} m`;
   $('infoZone').textContent = route.zone || '-';
   $('infoFileName').textContent = route.fileName || '-';
+  const first = route.points?.[0];
+  const last = route.points?.[route.points.length - 1];
+  $('infoStart').textContent = formatCoordinate(first);
+  $('infoEnd').textContent = formatCoordinate(last);
+  $('infoDuration').textContent = formatDuration(route.durationSeconds);
+  const speed = route.durationSeconds > 0 ? Number(route.distanceKm) / (route.durationSeconds / 3600) : 0;
+  $('infoSpeed').textContent = speed > 0 ? `${speed.toFixed(1)} km/h` : 'Non disponibile';
+  $('infoColor').value = route.color || COLORS[0];
+  $('infoColorValue').textContent = (route.color || COLORS[0]).toUpperCase();
   $('infoDate').value = route.hikeDate || '';
   $('infoFavorite').checked = route.favorite === true;
   $('infoNotes').value = route.notes || '';
@@ -341,6 +356,7 @@ async function saveRouteDetails() {
   route.hikeDate = $('infoDate').value;
   route.favorite = $('infoFavorite').checked;
   route.notes = $('infoNotes').value.trim();
+  route.color = $('infoColor').value;
   await dbPut(route);
   closeRouteInfo();
   renderAll();
@@ -388,6 +404,20 @@ function showMessage(text) {
   box.hidden = false;
   clearTimeout(showMessage.timer);
   showMessage.timer = setTimeout(() => { box.hidden = true; }, 3500);
+}
+
+function formatCoordinate(point) {
+  if (!point || !Number.isFinite(point.lat) || !Number.isFinite(point.lon)) return '-';
+  return `${point.lat.toFixed(5)}, ${point.lon.toFixed(5)}`;
+}
+
+function formatDuration(seconds) {
+  const total = Number(seconds) || 0;
+  if (total <= 0) return 'Non disponibile';
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  if (hours) return `${hours} h ${minutes} min`;
+  return `${minutes} min`;
 }
 
 function escapeHtml(value) {
