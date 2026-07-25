@@ -11,6 +11,8 @@ let startEndMarkers = [];
 let mapResizeObserver = null;
 let elevationMapMarker = null;
 let elevationChartState = null;
+let heatmapEnabled = false;
+let heatmapLayer = null;
 
 const $ = (id) => document.getElementById(id);
 
@@ -46,6 +48,7 @@ function bindInterface() {
   $('importButton').addEventListener('click', () => $('gpxInput').click());
   $('gpxInput').addEventListener('change', event => importFiles(Array.from(event.target.files || [])));
   $('showAllButton').addEventListener('click', showAllRoutes);
+  $('heatmapButton').addEventListener('click', toggleHeatmap);
   $('searchRoutes').addEventListener('input', renderRouteList);
   $('closeInfoIcon').addEventListener('click', closeRouteInfo);
   $('closeInfoPanel').addEventListener('click', closeRouteInfo);
@@ -267,17 +270,87 @@ function renderMapRoutes() {
   if (!map) return;
   routeLayers.forEach(layer => map.removeLayer(layer));
   routeLayers.clear();
+  if (heatmapLayer) {
+    map.removeLayer(heatmapLayer);
+    heatmapLayer = null;
+  }
   startEndMarkers.forEach(marker => map.removeLayer(marker));
   startEndMarkers = [];
+
   routes.forEach(route => {
     if (!Array.isArray(route.points) || route.points.length < 2) return;
     const layer = L.polyline(route.points.map(p => [p.lat, p.lon]), { color: route.color || COLORS[0], weight: 5, opacity: 0.9, lineJoin: 'round' });
     layer.bindTooltip(escapeHtml(route.name));
     layer.on('click', () => openRouteInfo(route));
     routeLayers.set(route.id, layer);
-    if (route.visible !== false) layer.addTo(map);
+    if (!heatmapEnabled && route.visible !== false) layer.addTo(map);
   });
+
+  if (heatmapEnabled) renderHeatmap();
   refreshMapSize(false);
+}
+
+function toggleHeatmap() {
+  heatmapEnabled = !heatmapEnabled;
+  const button = $('heatmapButton');
+  button.classList.toggle('active', heatmapEnabled);
+  button.setAttribute('aria-pressed', String(heatmapEnabled));
+  button.textContent = heatmapEnabled ? '🔥 Heatmap attiva' : '🔥 Heatmap';
+  $('heatmapLegend').hidden = !heatmapEnabled;
+  renderMapRoutes();
+  fitVisibleRoutes();
+  showMessage(heatmapEnabled ? 'Heatmap attivata.' : 'Heatmap disattivata.');
+}
+
+function heatCellKey(point, cellMeters = 35) {
+  const latStep = cellMeters / 111320;
+  const lonScale = Math.max(0.2, Math.cos(point.lat * Math.PI / 180));
+  const lonStep = cellMeters / (111320 * lonScale);
+  return `${Math.round(point.lat / latStep)}:${Math.round(point.lon / lonStep)}`;
+}
+
+function heatColor(count) {
+  if (count >= 4) return '#dc2626';
+  if (count === 3) return '#f97316';
+  if (count === 2) return '#eab308';
+  return '#16a34a';
+}
+
+function renderHeatmap() {
+  if (!map) return;
+  const visibleRoutes = routes.filter(route => route.visible !== false && Array.isArray(route.points) && route.points.length >= 2);
+  const frequency = new Map();
+
+  visibleRoutes.forEach(route => {
+    const visitedByRoute = new Set();
+    for (let index = 1; index < route.points.length; index += 1) {
+      const a = route.points[index - 1];
+      const b = route.points[index];
+      const midpoint = { lat: (a.lat + b.lat) / 2, lon: (a.lon + b.lon) / 2 };
+      visitedByRoute.add(heatCellKey(midpoint));
+    }
+    visitedByRoute.forEach(key => frequency.set(key, (frequency.get(key) || 0) + 1));
+  });
+
+  const segments = [];
+  visibleRoutes.forEach(route => {
+    for (let index = 1; index < route.points.length; index += 1) {
+      const a = route.points[index - 1];
+      const b = route.points[index];
+      const midpoint = { lat: (a.lat + b.lat) / 2, lon: (a.lon + b.lon) / 2 };
+      const count = frequency.get(heatCellKey(midpoint)) || 1;
+      segments.push(L.polyline([[a.lat, a.lon], [b.lat, b.lon]], {
+        color: heatColor(count),
+        weight: 6,
+        opacity: 0.9,
+        lineCap: 'round',
+        lineJoin: 'round',
+        interactive: false
+      }));
+    }
+  });
+
+  heatmapLayer = L.layerGroup(segments).addTo(map);
 }
 
 function displayedRoutes() {
@@ -370,6 +443,7 @@ async function showAllRoutes() {
 }
 
 function showRouteOnMap(route, layer) {
+  if (heatmapEnabled) toggleHeatmap();
   if (!map || !layer || !Array.isArray(route.points) || route.points.length < 2) return;
   startEndMarkers.forEach(marker => map.removeLayer(marker));
   startEndMarkers = [];

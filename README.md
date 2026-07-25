@@ -1,10 +1,11 @@
-# I Miei Sentieri – Versione 5.3
+# I Miei Sentieri – Versione 5.4
 
-Questa versione aggiunge un profilo altimetrico reale e interattivo per ogni percorso GPX.
+Questa versione aggiunge la **Heatmap personale** dei percorsi.
 
-- grafico della quota lungo la distanza;
-- quota minima e massima;
-- indicazione di quota e chilometro al passaggio del mouse o al tocco;
-- evidenziazione sulla mappa del punto corrispondente;
-- messaggio dedicato per GPX senza dati di altitudine;
-- nessuna libreria grafica esterna aggiuntiva.
+- pulsante per attivare e disattivare la Heatmap;
+- verde: tratto percorso una volta;
+- giallo: due volte;
+- arancione: tre volte;
+- rosso: quattro o più volte;
+- conteggio per percorso, così i punti GPS ravvicinati dello stesso file non aumentano artificialmente la frequenza;
+- mantiene il profilo altimetrico interattivo della versione 5.3.

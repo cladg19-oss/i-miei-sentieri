@@ -25,3 +25,13 @@
 .elevation-empty{padding:24px;text-align:center;border-radius:12px;background:#fff;color:var(--muted)}
 .elevation-help{margin-top:9px;color:var(--muted);font-size:12px;line-height:1.4}
 @media(max-width:600px){.elevation-heading{flex-direction:column}.elevation-summary{width:100%}.elevation-summary span{flex:1}.route-info-panel{padding:22px 16px}}
+
+
+/* Versione 5.4: Heatmap personale */
+.map-actions{display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end}
+.heatmap-button.active{background:#7f1d1d;color:#fff;box-shadow:0 0 0 3px rgba(220,38,38,.14)}
+.heatmap-legend{display:flex;gap:14px;flex-wrap:wrap;align-items:center;margin:-8px 0 14px;padding:10px 12px;border-radius:11px;background:#f8faf9;color:#526159;font-size:12px}
+.heatmap-legend span{display:flex;align-items:center;gap:6px}
+.heatmap-legend i{display:inline-block;width:24px;height:6px;border-radius:999px}
+.heat-1{background:#16a34a}.heat-2{background:#eab308}.heat-3{background:#f97316}.heat-4{background:#dc2626}
+@media(max-width:700px){.map-actions{width:100%;justify-content:stretch}.map-actions button{flex:1}.heatmap-legend{gap:9px}}
