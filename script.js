@@ -1,291 +1,345 @@
-import { openDB, getAll, add, save, remove } from './js/database.js';
-import { parseGPX } from './js/gpx.js';
-import { compareRoute } from './js/comparison.js';
-
 const COLORS = ['#2f7d4f', '#d97706', '#2563eb', '#9333ea', '#dc2626', '#0891b2'];
-const COMPARISON_TOLERANCE_METERS = 30;
-const NEW_COLOR = '#16a34a';
-const KNOWN_COLOR = '#6b7280';
+const DB_NAME = 'sentieriDB';
+const STORE_NAME = 'routes';
 
-let db;
-let map;
+let db = null;
+let map = null;
 let routes = [];
-let layers = new Map();
-let currentRoute = null;
+let routeLayers = new Map();
+let currentView = 'home';
 
-const elements = {};
+const $ = (id) => document.getElementById(id);
 
-document.addEventListener('DOMContentLoaded', async () => {
-  Object.assign(elements, {
-    gpxInput: document.getElementById('gpxInput'),
-    importButton: document.getElementById('importButton'),
-    showAllButton: document.getElementById('showAllButton'),
-    searchRoutes: document.getElementById('searchRoutes'),
-    routeInfoOverlay: document.getElementById('routeInfoOverlay'),
-    closeInfoIcon: document.getElementById('closeInfoIcon'),
-    closeInfoPanel: document.getElementById('closeInfoPanel'),
-    saveRouteDetails: document.getElementById('saveRouteDetails'),
-    analyzeRoute: document.getElementById('analyzeRoute'),
-    recentRoutes: document.getElementById('recentRoutes'),
-    routeCount: document.getElementById('routeCount'),
-    totalDistance: document.getElementById('totalDistance'),
-    totalElevation: document.getElementById('totalElevation'),
-    zoneCount: document.getElementById('zoneCount'),
-    infoTitle: document.getElementById('infoTitle'),
-    infoDistance: document.getElementById('infoDistance'),
-    infoElevation: document.getElementById('infoElevation'),
-    infoZone: document.getElementById('infoZone'),
-    infoFileName: document.getElementById('infoFileName'),
-    infoDate: document.getElementById('infoDate'),
-    infoFavorite: document.getElementById('infoFavorite'),
-    infoNotes: document.getElementById('infoNotes'),
-    analysisResult: document.getElementById('analysisResult'),
-    analysisTotal: document.getElementById('analysisTotal'),
-    analysisNew: document.getElementById('analysisNew'),
-    analysisKnown: document.getElementById('analysisKnown'),
-    analysisReferences: document.getElementById('analysisReferences'),
-    messageBox: document.getElementById('messageBox')
-  });
+function startApp() {
+  bindInterface();
+  initMap();
+  openDatabase()
+    .then(async database => {
+      db = database;
+      routes = normalizeRoutes(await dbGetAll());
+      renderAll();
+    })
+    .catch(error => {
+      console.error('Database non disponibile:', error);
+      showMessage('Archivio locale non disponibile. L’app resta utilizzabile, ma i dati non verranno salvati.');
+      renderAll();
+    });
+}
 
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', startApp, { once: true });
+} else {
+  startApp();
+}
+
+function bindInterface() {
   document.querySelectorAll('.menu-item').forEach(button => {
-    button.onclick = () => {
-      document.querySelectorAll('.menu-item').forEach(item => item.classList.remove('active'));
-      button.classList.add('active');
-    };
+    button.addEventListener('click', () => switchView(button.dataset.view || 'home'));
   });
 
+  $('importButton').addEventListener('click', () => $('gpxInput').click());
+  $('gpxInput').addEventListener('change', event => importFiles(Array.from(event.target.files || [])));
+  $('showAllButton').addEventListener('click', showAllRoutes);
+  $('searchRoutes').addEventListener('input', renderRouteList);
+  $('closeInfoIcon').addEventListener('click', closeRouteInfo);
+  $('closeInfoPanel').addEventListener('click', closeRouteInfo);
+  $('saveRouteDetails').addEventListener('click', saveRouteDetails);
+  $('routeInfoOverlay').addEventListener('click', event => {
+    if (event.target === $('routeInfoOverlay')) closeRouteInfo();
+  });
+}
+
+function switchView(view) {
+  currentView = view;
+  document.querySelectorAll('.menu-item').forEach(button => {
+    button.classList.toggle('active', button.dataset.view === view);
+  });
+
+  const titles = {
+    home: ['Dashboard personale', 'Benvenuto nei tuoi sentieri'],
+    map: ['Esplorazione', 'Mappa dei tuoi percorsi'],
+    archive: ['Archivio personale', 'Tutti i percorsi GPX'],
+    stats: ['Riepilogo', 'Statistiche dei tuoi sentieri'],
+    favorites: ['Raccolta', 'Percorsi preferiti'],
+    settings: ['Configurazione', 'Impostazioni']
+  };
+  const [small, title] = titles[view] || titles.home;
+  $('pageSmallTitle').textContent = small;
+  $('pageTitle').textContent = title;
+
+  document.querySelectorAll('[data-view-panel]').forEach(panel => {
+    panel.hidden = panel.dataset.viewPanel !== view;
+  });
+
+  if (view === 'map' && map) setTimeout(() => { map.invalidateSize(); fitVisibleRoutes(); }, 50);
+  renderAll();
+}
+
+function initMap() {
+  if (!window.L) {
+    showMessage('La mappa non è stata caricata. Controlla la connessione Internet.');
+    return;
+  }
   map = L.map('map').setView([45.714, 9.465], 13);
   L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
     maxZoom: 19,
     attribution: '&copy; OpenStreetMap'
   }).addTo(map);
+}
 
-  db = await openDB();
-  routes = (await getAll(db))
-    .map(route => ({
-      ...route,
-      visible: route.visible !== false,
-      favorite: route.favorite === true,
-      notes: route.notes || '',
-      hikeDate: route.hikeDate || '',
-      comparison: route.comparison || null
-    }))
-    .sort((first, second) => second.createdAt - first.createdAt);
+function openDatabase() {
+  return new Promise((resolve, reject) => {
+    if (!('indexedDB' in window)) return reject(new Error('IndexedDB non supportato'));
+    const request = indexedDB.open(DB_NAME, 1);
+    request.onupgradeneeded = event => {
+      const database = event.target.result;
+      if (!database.objectStoreNames.contains(STORE_NAME)) {
+        database.createObjectStore(STORE_NAME, { keyPath: 'id', autoIncrement: true });
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error('Errore apertura database'));
+    request.onblocked = () => reject(new Error('Database bloccato da un’altra scheda'));
+  });
+}
 
-  elements.importButton.onclick = () => elements.gpxInput.click();
-  elements.gpxInput.onchange = event => importFiles([...event.target.files]);
-  elements.showAllButton.onclick = showAllRoutes;
-  elements.searchRoutes.oninput = () => filterRoutes(elements.searchRoutes.value);
-  elements.closeInfoIcon.onclick = closeRouteInfo;
-  elements.closeInfoPanel.onclick = closeRouteInfo;
-  elements.saveRouteDetails.onclick = saveRouteDetails;
-  elements.analyzeRoute.onclick = analyzeCurrentRoute;
-  elements.routeInfoOverlay.onclick = event => {
-    if (event.target === elements.routeInfoOverlay) closeRouteInfo();
-  };
+function requestPromise(request) {
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error('Errore database'));
+  });
+}
 
-  render();
-  fitVisibleRoutes();
-});
+function dbGetAll() {
+  if (!db) return Promise.resolve([]);
+  return requestPromise(db.transaction(STORE_NAME, 'readonly').objectStore(STORE_NAME).getAll());
+}
+function dbAdd(route) {
+  if (!db) return Promise.resolve(Date.now() + Math.random());
+  return requestPromise(db.transaction(STORE_NAME, 'readwrite').objectStore(STORE_NAME).add(route));
+}
+function dbPut(route) {
+  if (!db) return Promise.resolve(route.id);
+  return requestPromise(db.transaction(STORE_NAME, 'readwrite').objectStore(STORE_NAME).put(route));
+}
+function dbDelete(id) {
+  if (!db) return Promise.resolve();
+  return requestPromise(db.transaction(STORE_NAME, 'readwrite').objectStore(STORE_NAME).delete(id));
+}
+
+function normalizeRoutes(items) {
+  return items.map(route => ({
+    ...route,
+    visible: route.visible !== false,
+    favorite: route.favorite === true,
+    notes: route.notes || '',
+    hikeDate: route.hikeDate || '',
+    createdAt: route.createdAt || Date.now()
+  })).sort((a, b) => b.createdAt - a.createdAt);
+}
 
 async function importFiles(files) {
-  let importedCount = 0;
+  if (!files.length) return;
+  let imported = 0;
   for (const file of files) {
     try {
+      const parsed = parseGPX(await file.text(), file.name);
       const route = {
-        ...parseGPX(await file.text(), file.name),
+        ...parsed,
         color: COLORS[routes.length % COLORS.length],
         visible: true,
         favorite: false,
         notes: '',
         hikeDate: '',
-        comparison: null,
-        createdAt: Date.now() + importedCount
+        createdAt: Date.now() + imported
       };
-      route.id = await add(db, route);
+      route.id = await dbAdd(route);
       routes.unshift(route);
-      importedCount += 1;
+      imported += 1;
     } catch (error) {
       console.error(`Errore nel file ${file.name}:`, error);
     }
   }
-  elements.gpxInput.value = '';
-  render();
+  $('gpxInput').value = '';
+  renderAll();
   fitVisibleRoutes();
-  showMessage(importedCount ? `${importedCount} percorso/i importato/i.` : 'Nessun GPX valido.');
+  showMessage(imported ? `${imported} percorso/i importato/i.` : 'Nessun file GPX valido.');
 }
 
-async function showAllRoutes() {
-  routes.forEach(route => { route.visible = true; });
-  await Promise.all(routes.map(route => save(db, route)));
-  render();
-  fitVisibleRoutes();
-}
+function parseGPX(text, fileName) {
+  const xml = new DOMParser().parseFromString(text, 'application/xml');
+  if (xml.querySelector('parsererror')) throw new Error('XML non valido');
+  let nodes = Array.from(xml.querySelectorAll('trkpt'));
+  if (!nodes.length) nodes = Array.from(xml.querySelectorAll('rtept'));
+  const points = nodes.map(node => ({
+    lat: Number(node.getAttribute('lat')),
+    lon: Number(node.getAttribute('lon')),
+    ele: node.querySelector('ele') ? Number(node.querySelector('ele').textContent) : null
+  })).filter(point => Number.isFinite(point.lat) && Number.isFinite(point.lon));
+  if (points.length < 2) throw new Error('Percorso non valido');
 
-function render() {
-  layers.forEach(layer => removeLayerFromMap(layer));
-  layers.clear();
-
-  routes.forEach(route => {
-    const layer = createRouteLayer(route);
-    if (route.visible) addLayerToMap(layer);
-    layers.set(route.id, layer);
-  });
-
-  elements.recentRoutes.innerHTML = '';
-  routes.forEach(route => {
-    const item = document.createElement('article');
-    item.className = 'route-item';
-    item.dataset.name = route.name.toLowerCase();
-    const analysisBadge = route.comparison ? ` · 🟢 ${route.comparison.newPercent.toFixed(0)}% nuovo` : '';
-    item.innerHTML = `<div class="route-main"><span class="route-color" style="background:${route.color}"></span><div class="route-info"><span class="route-name">${escapeHtml(route.name)} ${route.favorite ? '⭐' : ''}</span><span class="route-details">${route.distanceKm.toFixed(2)} km · ${route.elevationGain} m${analysisBadge}</span></div></div><div class="route-actions"><button class="route-toggle">${route.visible ? '👁️' : '🙈'}</button><button class="route-delete">🗑️</button></div>`;
-
-    item.querySelector('.route-main').onclick = () => {
-      const layer = layers.get(route.id);
-      map.fitBounds(layer.getBounds(), { padding: [30, 30] });
-      openRouteInfo(route);
-    };
-    item.querySelector('.route-toggle').onclick = async () => {
-      route.visible = !route.visible;
-      await save(db, route);
-      render();
-    };
-    item.querySelector('.route-delete').onclick = async () => {
-      if (!confirm(`Eliminare "${route.name}"?`)) return;
-      await remove(db, route.id);
-      routes = routes.filter(itemRoute => itemRoute.id !== route.id);
-      render();
-      fitVisibleRoutes();
-    };
-    elements.recentRoutes.appendChild(item);
-  });
-
-  elements.routeCount.textContent = routes.length;
-  elements.totalDistance.textContent = `${routes.reduce((sum, route) => sum + route.distanceKm, 0).toFixed(1)} km`;
-  elements.totalElevation.textContent = `${Math.round(routes.reduce((sum, route) => sum + route.elevationGain, 0))} m`;
-  elements.zoneCount.textContent = new Set(routes.map(route => route.zone)).size;
-  filterRoutes(elements.searchRoutes.value);
-}
-
-function createRouteLayer(route) {
-  if (!route.comparison?.segments?.length) {
-    return L.polyline(route.points.map(point => [point.lat, point.lon]), {
-      color: route.color,
-      weight: 5,
-      opacity: 0.85
-    }).bindPopup(`<strong>${escapeHtml(route.name)}</strong><br>${route.distanceKm.toFixed(2)} km<br>${route.elevationGain} m`).on('click', () => openRouteInfo(route));
+  let distanceKm = 0;
+  let elevationGain = 0;
+  for (let i = 1; i < points.length; i += 1) {
+    distanceKm += haversine(points[i - 1], points[i]);
+    if (Number.isFinite(points[i - 1].ele) && Number.isFinite(points[i].ele) && points[i].ele > points[i - 1].ele) {
+      elevationGain += points[i].ele - points[i - 1].ele;
+    }
   }
+  const nameNode = xml.querySelector('trk > name') || xml.querySelector('rte > name');
+  return {
+    name: nameNode?.textContent?.trim() || fileName.replace(/\.gpx$/i, ''),
+    fileName,
+    points,
+    distanceKm,
+    elevationGain: Math.round(elevationGain),
+    zone: `${points[0].lat.toFixed(2)}, ${points[0].lon.toFixed(2)}`
+  };
+}
 
-  const group = L.featureGroup();
-  route.comparison.segments.forEach(segment => {
-    L.polyline([[segment.start.lat, segment.start.lon], [segment.end.lat, segment.end.lon]], {
-      color: segment.alreadyWalked ? KNOWN_COLOR : NEW_COLOR,
-      weight: 6,
-      opacity: 0.9
-    }).addTo(group);
+function haversine(a, b) {
+  const radius = 6371;
+  const toRad = Math.PI / 180;
+  const dLat = (b.lat - a.lat) * toRad;
+  const dLon = (b.lon - a.lon) * toRad;
+  const value = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * toRad) * Math.cos(b.lat * toRad) * Math.sin(dLon / 2) ** 2;
+  return radius * 2 * Math.atan2(Math.sqrt(value), Math.sqrt(1 - value));
+}
+
+function renderAll() {
+  renderStats();
+  renderMapRoutes();
+  renderRouteList();
+  renderSettings();
+}
+
+function renderStats() {
+  const totalKm = routes.reduce((sum, route) => sum + (Number(route.distanceKm) || 0), 0);
+  const totalElevation = routes.reduce((sum, route) => sum + (Number(route.elevationGain) || 0), 0);
+  const zones = new Set(routes.map(route => route.zone).filter(Boolean));
+  $('routeCount').textContent = routes.length;
+  $('totalDistance').textContent = `${totalKm.toFixed(1)} km`;
+  $('totalElevation').textContent = `${Math.round(totalElevation)} m`;
+  $('zoneCount').textContent = zones.size;
+  $('statsDetails').innerHTML = `<div class="big-stat"><strong>${routes.length}</strong><span>Percorsi</span></div><div class="big-stat"><strong>${totalKm.toFixed(1)} km</strong><span>Distanza</span></div><div class="big-stat"><strong>${Math.round(totalElevation)} m</strong><span>Dislivello</span></div><div class="big-stat"><strong>${routes.filter(r => r.favorite).length}</strong><span>Preferiti</span></div>`;
+}
+
+function renderMapRoutes() {
+  if (!map) return;
+  routeLayers.forEach(layer => map.removeLayer(layer));
+  routeLayers.clear();
+  routes.forEach(route => {
+    if (!Array.isArray(route.points) || route.points.length < 2) return;
+    const layer = L.polyline(route.points.map(p => [p.lat, p.lon]), { color: route.color || COLORS[0], weight: 4 });
+    layer.bindTooltip(escapeHtml(route.name));
+    layer.on('click', () => openRouteInfo(route));
+    routeLayers.set(route.id, layer);
+    if (route.visible !== false) layer.addTo(map);
   });
-  group.bindPopup(`<strong>${escapeHtml(route.name)}</strong><br>🟢 Nuovo: ${route.comparison.newKm.toFixed(2)} km<br>⚪ Già percorso: ${route.comparison.knownKm.toFixed(2)} km`);
-  group.on('click', () => openRouteInfo(route));
-  return group;
 }
 
-function addLayerToMap(layer) {
-  layer.addTo(map);
+function displayedRoutes() {
+  const query = $('searchRoutes').value.trim().toLowerCase();
+  let list = routes;
+  if (currentView === 'favorites') list = list.filter(route => route.favorite);
+  if (query) list = list.filter(route => route.name.toLowerCase().includes(query));
+  return list;
 }
 
-function removeLayerFromMap(layer) {
-  if (map.hasLayer(layer)) map.removeLayer(layer);
+function renderRouteList() {
+  const containers = [$('recentRoutes'), $('archiveRoutes'), $('favoriteRoutes')];
+  containers.forEach(container => { if (container) container.innerHTML = ''; });
+  const list = displayedRoutes();
+  const target = currentView === 'archive' ? $('archiveRoutes') : currentView === 'favorites' ? $('favoriteRoutes') : $('recentRoutes');
+  if (!target) return;
+  if (!list.length) {
+    target.innerHTML = '<p class="empty-state">Nessun percorso da mostrare.</p>';
+    return;
+  }
+  list.forEach(route => target.appendChild(createRouteCard(route)));
+}
+
+function createRouteCard(route) {
+  const item = document.createElement('article');
+  item.className = 'route-item';
+  item.innerHTML = `<button class="route-main" type="button"><span class="route-color" style="background:${route.color || COLORS[0]}"></span><span class="route-info"><span class="route-name">${escapeHtml(route.name)} ${route.favorite ? '⭐' : ''}</span><span class="route-details">${Number(route.distanceKm).toFixed(2)} km · ${Math.round(route.elevationGain || 0)} m</span></span></button><div class="route-actions"><button class="route-toggle" type="button" title="Mostra o nascondi">${route.visible !== false ? '👁️' : '🙈'}</button><button class="route-delete" type="button" title="Elimina">🗑️</button></div>`;
+  item.querySelector('.route-main').addEventListener('click', () => {
+    openRouteInfo(route);
+    const layer = routeLayers.get(route.id);
+    if (layer && map) map.fitBounds(layer.getBounds(), { padding: [30, 30] });
+  });
+  item.querySelector('.route-toggle').addEventListener('click', async () => {
+    route.visible = !route.visible;
+    await dbPut(route);
+    renderAll();
+  });
+  item.querySelector('.route-delete').addEventListener('click', async () => {
+    if (!confirm(`Eliminare “${route.name}”?`)) return;
+    await dbDelete(route.id);
+    routes = routes.filter(itemRoute => itemRoute.id !== route.id);
+    renderAll();
+    showMessage('Percorso eliminato.');
+  });
+  return item;
 }
 
 function openRouteInfo(route) {
-  currentRoute = route;
-  elements.infoTitle.textContent = route.name;
-  elements.infoDistance.textContent = `${route.distanceKm.toFixed(2)} km`;
-  elements.infoElevation.textContent = `${route.elevationGain} m`;
-  elements.infoZone.textContent = route.zone;
-  elements.infoFileName.textContent = route.fileName || '-';
-  elements.infoDate.value = route.hikeDate || '';
-  elements.infoFavorite.checked = Boolean(route.favorite);
-  elements.infoNotes.value = route.notes || '';
-  updateAnalysisPanel(route.comparison);
-  elements.routeInfoOverlay.hidden = false;
+  window.currentRoute = route;
+  $('infoTitle').textContent = route.name;
+  $('infoDistance').textContent = `${Number(route.distanceKm).toFixed(2)} km`;
+  $('infoElevation').textContent = `${Math.round(route.elevationGain || 0)} m`;
+  $('infoZone').textContent = route.zone || '-';
+  $('infoFileName').textContent = route.fileName || '-';
+  $('infoDate').value = route.hikeDate || '';
+  $('infoFavorite').checked = route.favorite === true;
+  $('infoNotes').value = route.notes || '';
+  $('routeInfoOverlay').hidden = false;
 }
 
 function closeRouteInfo() {
-  elements.routeInfoOverlay.hidden = true;
-  currentRoute = null;
+  $('routeInfoOverlay').hidden = true;
+  window.currentRoute = null;
 }
 
 async function saveRouteDetails() {
-  if (!currentRoute) return;
-  currentRoute.hikeDate = elements.infoDate.value;
-  currentRoute.favorite = elements.infoFavorite.checked;
-  currentRoute.notes = elements.infoNotes.value.trim();
-  await save(db, currentRoute);
+  const route = window.currentRoute;
+  if (!route) return;
+  route.hikeDate = $('infoDate').value;
+  route.favorite = $('infoFavorite').checked;
+  route.notes = $('infoNotes').value.trim();
+  await dbPut(route);
   closeRouteInfo();
-  render();
+  renderAll();
   showMessage('Dettagli salvati.');
 }
 
-async function analyzeCurrentRoute() {
-  if (!currentRoute) return;
-  elements.analyzeRoute.disabled = true;
-  elements.analyzeRoute.textContent = 'Analisi in corso…';
-  await new Promise(resolve => setTimeout(resolve, 30));
-  try {
-    currentRoute.comparison = compareRoute(currentRoute, routes, COMPARISON_TOLERANCE_METERS);
-    await save(db, currentRoute);
-    updateAnalysisPanel(currentRoute.comparison);
-    render();
-    const layer = layers.get(currentRoute.id);
-    if (layer) map.fitBounds(layer.getBounds(), { padding: [30, 30] });
-    showMessage('Confronto completato.');
-  } catch (error) {
-    console.error(error);
-    showMessage('Non è stato possibile completare il confronto.');
-  } finally {
-    elements.analyzeRoute.disabled = false;
-    elements.analyzeRoute.textContent = '🔍 Analizza percorso';
+async function showAllRoutes() {
+  for (const route of routes) {
+    route.visible = true;
+    await dbPut(route);
   }
-}
-
-function updateAnalysisPanel(comparison) {
-  if (!comparison) {
-    elements.analysisResult.hidden = true;
-    return;
-  }
-  elements.analysisResult.hidden = false;
-  elements.analysisTotal.textContent = `${comparison.totalKm.toFixed(2)} km`;
-  elements.analysisNew.textContent = `${comparison.newKm.toFixed(2)} km (${comparison.newPercent.toFixed(0)}%)`;
-  elements.analysisKnown.textContent = `${comparison.knownKm.toFixed(2)} km (${comparison.knownPercent.toFixed(0)}%)`;
-  elements.analysisReferences.textContent = comparison.referenceRouteCount
-    ? `Confrontato con ${comparison.referenceRouteCount} altri percorsi · tolleranza ${comparison.toleranceMeters} m.`
-    : `Non ci sono altri percorsi da confrontare: tutto il tracciato risulta nuovo.`;
+  renderAll();
+  fitVisibleRoutes();
 }
 
 function fitVisibleRoutes() {
-  const visibleLayers = routes.filter(route => route.visible).map(route => layers.get(route.id)).filter(Boolean);
-  if (visibleLayers.length) map.fitBounds(L.featureGroup(visibleLayers).getBounds(), { padding: [30, 30] });
+  if (!map) return;
+  const visible = routes.filter(route => route.visible !== false).map(route => routeLayers.get(route.id)).filter(Boolean);
+  if (visible.length) map.fitBounds(L.featureGroup(visible).getBounds(), { padding: [30, 30] });
 }
 
-function filterRoutes(text) {
-  const query = text.trim().toLowerCase();
-  document.querySelectorAll('.route-item').forEach(item => {
-    item.style.display = item.dataset.name.includes(query) ? '' : 'none';
-  });
+function renderSettings() {
+  $('settingsInfo').textContent = db ? 'Archivio locale attivo sul dispositivo.' : 'Archivio locale non disponibile.';
 }
 
 function showMessage(text) {
-  elements.messageBox.textContent = text;
-  elements.messageBox.hidden = false;
-  setTimeout(() => { elements.messageBox.hidden = true; }, 3000);
+  const box = $('messageBox');
+  box.textContent = text;
+  box.hidden = false;
+  clearTimeout(showMessage.timer);
+  showMessage.timer = setTimeout(() => { box.hidden = true; }, 3500);
 }
 
 function escapeHtml(value) {
-  return String(value)
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#039;');
+  return String(value).replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[char]));
 }
