@@ -16,3 +16,6 @@
 .color-picker-row span{margin:0;font-family:monospace;color:#475569}
 .route-item.selected{outline:2px solid #2f7d4f;background:#eaf5ee}
 @media(max-width:650px){.route-info-panel{padding:22px}.route-info-grid{grid-template-columns:1fr}}
+
+/* Versione 5.2: profilo altimetrico */
+.elevation-section{margin-top:18px;padding:16px;border:1px solid #d9e4dd;border-radius:14px;background:#f8fbf9}.elevation-heading{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}.elevation-heading span{display:block;color:var(--muted);font-size:13px;margin-bottom:4px}.elevation-chart-wrap{position:relative;width:100%;min-height:220px}.elevation-chart-wrap canvas{display:block;width:100%;height:220px;background:white;border-radius:10px}.elevation-empty{display:grid;place-items:center;min-height:180px;color:var(--muted);text-align:center;padding:24px;background:white;border-radius:10px}

@@ -342,6 +342,7 @@ function openRouteInfo(route) {
   $('infoDate').value = route.hikeDate || '';
   $('infoFavorite').checked = route.favorite === true;
   $('infoNotes').value = route.notes || '';
+  drawElevationProfile(route);
   $('routeInfoOverlay').hidden = false;
 }
 
@@ -422,4 +423,97 @@ function formatDuration(seconds) {
 
 function escapeHtml(value) {
   return String(value).replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[char]));
+}
+
+
+function drawElevationProfile(route) {
+  const canvas = $('elevationChart');
+  const empty = $('elevationEmpty');
+  const rangeLabel = $('elevationRange');
+  if (!canvas || !empty || !rangeLabel) return;
+
+  const samples = (route.points || [])
+    .map((point, index) => ({ index, ele: Number(point.ele) }))
+    .filter(sample => Number.isFinite(sample.ele));
+
+  if (samples.length < 2) {
+    canvas.hidden = true;
+    empty.hidden = false;
+    rangeLabel.textContent = 'Dati non disponibili';
+    return;
+  }
+
+  canvas.hidden = false;
+  empty.hidden = true;
+  const elevations = samples.map(sample => sample.ele);
+  const minEle = Math.min(...elevations);
+  const maxEle = Math.max(...elevations);
+  rangeLabel.textContent = `${Math.round(minEle)}–${Math.round(maxEle)} m`;
+
+  const ratio = Math.max(1, window.devicePixelRatio || 1);
+  const cssWidth = Math.max(300, canvas.clientWidth || 680);
+  const cssHeight = 220;
+  canvas.width = Math.round(cssWidth * ratio);
+  canvas.height = Math.round(cssHeight * ratio);
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  ctx.clearRect(0, 0, cssWidth, cssHeight);
+
+  const pad = { left: 48, right: 16, top: 18, bottom: 34 };
+  const width = cssWidth - pad.left - pad.right;
+  const height = cssHeight - pad.top - pad.bottom;
+  const range = Math.max(1, maxEle - minEle);
+
+  ctx.strokeStyle = '#d9e4dd';
+  ctx.lineWidth = 1;
+  ctx.font = '12px Arial';
+  ctx.fillStyle = '#718078';
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  for (let i = 0; i <= 4; i += 1) {
+    const y = pad.top + (height * i / 4);
+    const value = maxEle - (range * i / 4);
+    ctx.beginPath();
+    ctx.moveTo(pad.left, y);
+    ctx.lineTo(cssWidth - pad.right, y);
+    ctx.stroke();
+    ctx.fillText(`${Math.round(value)} m`, pad.left - 8, y);
+  }
+
+  const pointToXY = (sample, position) => ({
+    x: pad.left + (width * position / Math.max(1, samples.length - 1)),
+    y: pad.top + height - ((sample.ele - minEle) / range) * height
+  });
+
+  ctx.beginPath();
+  samples.forEach((sample, index) => {
+    const { x, y } = pointToXY(sample, index);
+    if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.lineTo(cssWidth - pad.right, pad.top + height);
+  ctx.lineTo(pad.left, pad.top + height);
+  ctx.closePath();
+  const gradient = ctx.createLinearGradient(0, pad.top, 0, pad.top + height);
+  gradient.addColorStop(0, 'rgba(47,125,79,.38)');
+  gradient.addColorStop(1, 'rgba(47,125,79,.05)');
+  ctx.fillStyle = gradient;
+  ctx.fill();
+
+  ctx.beginPath();
+  samples.forEach((sample, index) => {
+    const { x, y } = pointToXY(sample, index);
+    if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.strokeStyle = route.color || COLORS[0];
+  ctx.lineWidth = 3;
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  ctx.stroke();
+
+  ctx.fillStyle = '#718078';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  ctx.fillText('0 km', pad.left, cssHeight - 24);
+  ctx.textAlign = 'right';
+  ctx.fillText(`${Number(route.distanceKm || 0).toFixed(1)} km`, cssWidth - pad.right, cssHeight - 24);
 }
