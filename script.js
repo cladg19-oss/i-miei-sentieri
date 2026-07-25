@@ -7,12 +7,16 @@ let map = null;
 let routes = [];
 let routeLayers = new Map();
 let currentView = 'home';
+let startEndMarkers = [];
+let mapResizeObserver = null;
 
 const $ = (id) => document.getElementById(id);
 
 function startApp() {
   bindInterface();
   initMap();
+  window.addEventListener('load', () => refreshMapSize(true), { once: true });
+  window.addEventListener('resize', () => refreshMapSize(false));
   openDatabase()
     .then(async database => {
       db = database;
@@ -71,8 +75,9 @@ function switchView(view) {
     panel.hidden = panel.dataset.viewPanel !== view;
   });
 
-  if (view === 'map' && map) setTimeout(() => { map.invalidateSize(); fitVisibleRoutes(); }, 50);
+  moveMapToView(view);
   renderAll();
+  refreshMapSize(view === 'map');
 }
 
 function initMap() {
@@ -80,11 +85,34 @@ function initMap() {
     showMessage('La mappa non è stata caricata. Controlla la connessione Internet.');
     return;
   }
-  map = L.map('map').setView([45.714, 9.465], 13);
+  map = L.map('map', { zoomControl: true, preferCanvas: true }).setView([45.714, 9.465], 13);
   L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
     maxZoom: 19,
     attribution: '&copy; OpenStreetMap'
   }).addTo(map);
+
+  const mapElement = $('map');
+  if ('ResizeObserver' in window) {
+    mapResizeObserver = new ResizeObserver(() => refreshMapSize(false));
+    mapResizeObserver.observe(mapElement);
+  }
+  setTimeout(() => refreshMapSize(false), 0);
+  setTimeout(() => refreshMapSize(false), 150);
+  setTimeout(() => refreshMapSize(false), 500);
+}
+
+function moveMapToView(view) {
+  const card = $('mapCard');
+  const target = view === 'map' ? $('fullMapHost') : $('homeMapHost');
+  if (card && target && card.parentElement !== target) target.appendChild(card);
+}
+
+function refreshMapSize(shouldFit = false) {
+  if (!map) return;
+  requestAnimationFrame(() => {
+    map.invalidateSize({ pan: false, debounceMoveend: true });
+    if (shouldFit) fitVisibleRoutes();
+  });
 }
 
 function openDatabase() {
@@ -228,14 +256,17 @@ function renderMapRoutes() {
   if (!map) return;
   routeLayers.forEach(layer => map.removeLayer(layer));
   routeLayers.clear();
+  startEndMarkers.forEach(marker => map.removeLayer(marker));
+  startEndMarkers = [];
   routes.forEach(route => {
     if (!Array.isArray(route.points) || route.points.length < 2) return;
-    const layer = L.polyline(route.points.map(p => [p.lat, p.lon]), { color: route.color || COLORS[0], weight: 4 });
+    const layer = L.polyline(route.points.map(p => [p.lat, p.lon]), { color: route.color || COLORS[0], weight: 5, opacity: 0.9, lineJoin: 'round' });
     layer.bindTooltip(escapeHtml(route.name));
     layer.on('click', () => openRouteInfo(route));
     routeLayers.set(route.id, layer);
     if (route.visible !== false) layer.addTo(map);
   });
+  refreshMapSize(false);
 }
 
 function displayedRoutes() {
@@ -266,7 +297,10 @@ function createRouteCard(route) {
   item.querySelector('.route-main').addEventListener('click', () => {
     openRouteInfo(route);
     const layer = routeLayers.get(route.id);
-    if (layer && map) map.fitBounds(layer.getBounds(), { padding: [30, 30] });
+    if (layer && map) {
+      switchView('map');
+      showRouteOnMap(route, layer);
+    }
   });
   item.querySelector('.route-toggle').addEventListener('click', async () => {
     route.visible = !route.visible;
@@ -322,10 +356,26 @@ async function showAllRoutes() {
   fitVisibleRoutes();
 }
 
+function showRouteOnMap(route, layer) {
+  if (!map || !layer || !Array.isArray(route.points) || route.points.length < 2) return;
+  startEndMarkers.forEach(marker => map.removeLayer(marker));
+  startEndMarkers = [];
+  const first = route.points[0];
+  const last = route.points[route.points.length - 1];
+  const startMarker = L.marker([first.lat, first.lon], { title: 'Partenza' }).bindPopup('<strong>Partenza</strong>');
+  const endMarker = L.marker([last.lat, last.lon], { title: 'Arrivo' }).bindPopup('<strong>Arrivo</strong>');
+  startMarker.addTo(map);
+  endMarker.addTo(map);
+  startEndMarkers = [startMarker, endMarker];
+  refreshMapSize(false);
+  setTimeout(() => map.fitBounds(layer.getBounds(), { padding: [45, 45], maxZoom: 17 }), 80);
+}
+
 function fitVisibleRoutes() {
   if (!map) return;
   const visible = routes.filter(route => route.visible !== false).map(route => routeLayers.get(route.id)).filter(Boolean);
-  if (visible.length) map.fitBounds(L.featureGroup(visible).getBounds(), { padding: [30, 30] });
+  refreshMapSize(false);
+  if (visible.length) setTimeout(() => map.fitBounds(L.featureGroup(visible).getBounds(), { padding: [40, 40], maxZoom: 16 }), 60);
 }
 
 function renderSettings() {
