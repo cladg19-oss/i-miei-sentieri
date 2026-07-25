@@ -13,6 +13,9 @@ let elevationMapMarker = null;
 let elevationChartState = null;
 let heatmapEnabled = false;
 let heatmapLayer = null;
+let discoverMap = null;
+let discoverCandidate = null;
+let discoverLayers = [];
 
 const $ = (id) => document.getElementById(id);
 
@@ -56,6 +59,11 @@ function bindInterface() {
   $('exportBackupButton').addEventListener('click', exportBackup);
   $('importBackupButton').addEventListener('click', () => $('backupInput').click());
   $('backupInput').addEventListener('change', importBackup);
+  $('discoverFileButton').addEventListener('click', () => $('discoverFileInput').click());
+  $('discoverFileInput').addEventListener('change', analyzeDiscoverFile);
+  $('discoverTolerance').addEventListener('change', () => { if (discoverCandidate) runDiscoverComparison(discoverCandidate); });
+  $('saveDiscoveredRoute').addEventListener('click', saveDiscoveredRoute);
+  $('clearDiscoveredRoute').addEventListener('click', clearDiscoveredRoute);
   $('routeInfoOverlay').addEventListener('click', event => {
     if (event.target === $('routeInfoOverlay')) closeRouteInfo();
   });
@@ -82,6 +90,7 @@ function switchView(view) {
     archive: ['Archivio personale', 'Tutti i percorsi GPX'],
     stats: ['Riepilogo', 'Statistiche dei tuoi sentieri'],
     favorites: ['Raccolta', 'Percorsi preferiti'],
+    discover: ['Pianificazione', 'Scopri nuovi sentieri'],
     settings: ['Configurazione', 'Impostazioni']
   };
   const [small, title] = titles[view] || titles.home;
@@ -95,6 +104,7 @@ function switchView(view) {
   moveMapToView(view);
   renderAll();
   refreshMapSize(view === 'map');
+  if (view === 'discover') initDiscoverMap();
 }
 
 function initMap() {
@@ -660,6 +670,158 @@ function clearElevationPointer() {
   if (tooltip) tooltip.hidden = true;
   if (elevationMapMarker && map) map.removeLayer(elevationMapMarker);
   elevationMapMarker = null;
+}
+
+
+function initDiscoverMap() {
+  if (discoverMap || !window.L) {
+    if (discoverMap) setTimeout(() => discoverMap.invalidateSize(), 30);
+    return;
+  }
+  discoverMap = L.map('discoverMap', { zoomControl: true, preferCanvas: true }).setView([45.714, 9.465], 11);
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; OpenStreetMap'
+  }).addTo(discoverMap);
+  setTimeout(() => discoverMap.invalidateSize(), 50);
+}
+
+async function analyzeDiscoverFile(event) {
+  const input = event.target;
+  const file = input.files?.[0];
+  input.value = '';
+  if (!file) return;
+  try {
+    discoverCandidate = parseGPX(await file.text(), file.name);
+    runDiscoverComparison(discoverCandidate);
+    showMessage('Confronto completato.');
+  } catch (error) {
+    console.error('Errore analisi nuovo percorso:', error);
+    clearDiscoveredRoute();
+    showMessage('Il file GPX non è valido.');
+  }
+}
+
+function buildReferenceIndex(cellMeters = 80) {
+  const index = new Map();
+  const latCell = cellMeters / 111320;
+  const add = (key, segment) => {
+    if (!index.has(key)) index.set(key, []);
+    index.get(key).push(segment);
+  };
+  routes.forEach(route => {
+    const points = Array.isArray(route.points) ? route.points : [];
+    for (let i = 1; i < points.length; i += 1) {
+      const a = points[i - 1];
+      const b = points[i];
+      const midLat = (a.lat + b.lat) / 2;
+      const lonCell = cellMeters / (111320 * Math.max(0.2, Math.cos(midLat * Math.PI / 180)));
+      const minX = Math.floor(Math.min(a.lon, b.lon) / lonCell) - 1;
+      const maxX = Math.floor(Math.max(a.lon, b.lon) / lonCell) + 1;
+      const minY = Math.floor(Math.min(a.lat, b.lat) / latCell) - 1;
+      const maxY = Math.floor(Math.max(a.lat, b.lat) / latCell) + 1;
+      const segment = { a, b, routeName: route.name };
+      for (let x = minX; x <= maxX; x += 1) for (let y = minY; y <= maxY; y += 1) add(`${x}:${y}`, segment);
+    }
+  });
+  return { index, latCell, cellMeters };
+}
+
+function pointToSegmentMeters(point, a, b) {
+  const lat0 = point.lat * Math.PI / 180;
+  const mx = 111320 * Math.cos(lat0);
+  const my = 111320;
+  const px = point.lon * mx, py = point.lat * my;
+  const ax = a.lon * mx, ay = a.lat * my;
+  const bx = b.lon * mx, by = b.lat * my;
+  const dx = bx - ax, dy = by - ay;
+  const length2 = dx * dx + dy * dy;
+  const t = length2 ? Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / length2)) : 0;
+  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+}
+
+function runDiscoverComparison(candidate) {
+  initDiscoverMap();
+  const tolerance = Number($('discoverTolerance').value) || 30;
+  const reference = buildReferenceIndex(Math.max(80, tolerance * 3));
+  const classified = [];
+  let newKm = 0;
+  let knownKm = 0;
+  for (let i = 1; i < candidate.points.length; i += 1) {
+    const a = candidate.points[i - 1];
+    const b = candidate.points[i];
+    const mid = { lat: (a.lat + b.lat) / 2, lon: (a.lon + b.lon) / 2 };
+    const lonCell = reference.cellMeters / (111320 * Math.max(0.2, Math.cos(mid.lat * Math.PI / 180)));
+    const cx = Math.floor(mid.lon / lonCell);
+    const cy = Math.floor(mid.lat / reference.latCell);
+    const candidates = [];
+    for (let x = cx - 1; x <= cx + 1; x += 1) for (let y = cy - 1; y <= cy + 1; y += 1) candidates.push(...(reference.index.get(`${x}:${y}`) || []));
+    const known = candidates.some(segment => pointToSegmentMeters(mid, segment.a, segment.b) <= tolerance);
+    const km = haversine(a, b);
+    if (known) knownKm += km; else newKm += km;
+    classified.push({ a, b, known, km });
+  }
+  candidate.discovery = { tolerance, newKm, knownKm, classified };
+  renderDiscoverResult(candidate);
+}
+
+function renderDiscoverResult(candidate) {
+  const result = candidate.discovery;
+  const total = result.newKm + result.knownKm;
+  const newPct = total ? result.newKm / total * 100 : 0;
+  const knownPct = 100 - newPct;
+  $('discoverEmpty').hidden = true;
+  $('discoverResult').hidden = false;
+  $('discoverName').textContent = candidate.name;
+  $('discoverTotal').textContent = `${total.toFixed(2)} km`;
+  $('discoverNew').textContent = `${result.newKm.toFixed(2)} km · ${newPct.toFixed(0)}%`;
+  $('discoverKnown').textContent = `${result.knownKm.toFixed(2)} km · ${knownPct.toFixed(0)}%`;
+  $('discoverProgressNew').style.width = `${newPct}%`;
+  $('discoverSummary').textContent = newPct >= 70 ? 'Ottima scelta: gran parte del percorso è nuova.' : newPct >= 35 ? 'Percorso misto: contiene diversi tratti nuovi.' : 'Questo itinerario passa soprattutto su sentieri già presenti nel tuo archivio.';
+  renderDiscoverMap(candidate);
+}
+
+function renderDiscoverMap(candidate) {
+  initDiscoverMap();
+  if (!discoverMap) return;
+  discoverLayers.forEach(layer => discoverMap.removeLayer(layer));
+  discoverLayers = [];
+  const groups = [];
+  let current = null;
+  candidate.discovery.classified.forEach(segment => {
+    if (!current || current.known !== segment.known) {
+      current = { known: segment.known, points: [[segment.a.lat, segment.a.lon], [segment.b.lat, segment.b.lon]] };
+      groups.push(current);
+    } else current.points.push([segment.b.lat, segment.b.lon]);
+  });
+  groups.forEach(group => {
+    const layer = L.polyline(group.points, { color: group.known ? '#6b7280' : '#16a34a', weight: 6, opacity: .95, lineCap: 'round', lineJoin: 'round' }).addTo(discoverMap);
+    discoverLayers.push(layer);
+  });
+  if (discoverLayers.length) setTimeout(() => discoverMap.fitBounds(L.featureGroup(discoverLayers).getBounds(), { padding: [35, 35], maxZoom: 17 }), 50);
+}
+
+async function saveDiscoveredRoute() {
+  if (!discoverCandidate) return;
+  const route = {
+    ...discoverCandidate,
+    color: COLORS[routes.length % COLORS.length],
+    visible: true, favorite: false, notes: '', hikeDate: '', createdAt: Date.now()
+  };
+  delete route.discovery;
+  route.id = await dbAdd(route);
+  routes.unshift(route);
+  renderAll();
+  showMessage('Percorso salvato nell’archivio.');
+  clearDiscoveredRoute();
+}
+
+function clearDiscoveredRoute() {
+  discoverCandidate = null;
+  $('discoverEmpty').hidden = false;
+  $('discoverResult').hidden = true;
+  discoverLayers.forEach(layer => { if (discoverMap) discoverMap.removeLayer(layer); });
+  discoverLayers = [];
 }
 
 function renderSettings() {
