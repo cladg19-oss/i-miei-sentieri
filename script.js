@@ -53,6 +53,9 @@ function bindInterface() {
   $('closeInfoIcon').addEventListener('click', closeRouteInfo);
   $('closeInfoPanel').addEventListener('click', closeRouteInfo);
   $('saveRouteDetails').addEventListener('click', saveRouteDetails);
+  $('exportBackupButton').addEventListener('click', exportBackup);
+  $('importBackupButton').addEventListener('click', () => $('backupInput').click());
+  $('backupInput').addEventListener('change', importBackup);
   $('routeInfoOverlay').addEventListener('click', event => {
     if (event.target === $('routeInfoOverlay')) closeRouteInfo();
   });
@@ -167,6 +170,11 @@ function dbPut(route) {
 function dbDelete(id) {
   if (!db) return Promise.resolve();
   return requestPromise(db.transaction(STORE_NAME, 'readwrite').objectStore(STORE_NAME).delete(id));
+}
+
+function dbClear() {
+  if (!db) return Promise.resolve();
+  return requestPromise(db.transaction(STORE_NAME, 'readwrite').objectStore(STORE_NAME).clear());
 }
 
 function normalizeRoutes(items) {
@@ -655,7 +663,74 @@ function clearElevationPointer() {
 }
 
 function renderSettings() {
-  $('settingsInfo').textContent = db ? 'Archivio locale attivo sul dispositivo.' : 'Archivio locale non disponibile.';
+  $('settingsInfo').textContent = db
+    ? `Archivio locale attivo: ${routes.length} percorso/i salvato/i su questo dispositivo.`
+    : 'Archivio locale non disponibile: il backup può essere esportato, ma il ripristino non può essere salvato in modo permanente.';
+}
+
+function backupFileName() {
+  const date = new Date();
+  const stamp = [date.getFullYear(), String(date.getMonth() + 1).padStart(2, '0'), String(date.getDate()).padStart(2, '0')].join('-');
+  return `i-miei-sentieri-backup-${stamp}.json`;
+}
+
+function setBackupStatus(text, isError = false) {
+  const status = $('backupStatus');
+  status.textContent = text;
+  status.classList.toggle('error', isError);
+}
+
+function exportBackup() {
+  try {
+    const payload = {
+      app: 'I Miei Sentieri',
+      backupVersion: 1,
+      exportedAt: new Date().toISOString(),
+      routeCount: routes.length,
+      routes
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = backupFileName();
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    setBackupStatus(`Backup creato: ${routes.length} percorso/i esportato/i.`);
+    showMessage('Backup esportato correttamente.');
+  } catch (error) {
+    console.error('Errore esportazione backup:', error);
+    setBackupStatus('Non è stato possibile creare il backup.', true);
+    showMessage('Errore durante l’esportazione del backup.');
+  }
+}
+
+async function importBackup(event) {
+  const input = event.target;
+  const file = input.files?.[0];
+  input.value = '';
+  if (!file) return;
+  try {
+    const payload = JSON.parse(await file.text());
+    if (payload?.app !== 'I Miei Sentieri' || payload?.backupVersion !== 1 || !Array.isArray(payload.routes)) {
+      throw new Error('Formato backup non riconosciuto');
+    }
+    const restored = normalizeRoutes(payload.routes).filter(route => Array.isArray(route.points) && route.points.length >= 2);
+    if (!confirm(`Ripristinare ${restored.length} percorso/i? L’archivio attuale verrà sostituito.`)) return;
+    await dbClear();
+    for (const route of restored) await dbPut(route);
+    routes = restored;
+    renderAll();
+    fitVisibleRoutes();
+    setBackupStatus(`Ripristino completato: ${restored.length} percorso/i caricati.`);
+    showMessage('Backup ripristinato correttamente.');
+  } catch (error) {
+    console.error('Errore ripristino backup:', error);
+    setBackupStatus('File non valido o danneggiato. Nessun dato è stato modificato.', true);
+    showMessage('Impossibile ripristinare questo backup.');
+  }
 }
 
 function showMessage(text) {

@@ -35,3 +35,12 @@
 .heatmap-legend i{display:inline-block;width:24px;height:6px;border-radius:999px}
 .heat-1{background:#16a34a}.heat-2{background:#eab308}.heat-3{background:#f97316}.heat-4{background:#dc2626}
 @media(max-width:700px){.map-actions{width:100%;justify-content:stretch}.map-actions button{flex:1}.heatmap-legend{gap:9px}}
+
+/* Versione 5.5: backup e ripristino */
+.settings-card{max-width:850px}
+.backup-section{margin-top:22px;padding:20px;border:1px solid #d9e4dd;border-radius:15px;background:#f8fbf9}
+.backup-section h4{font-size:18px;margin-bottom:8px}
+.backup-actions{display:flex;gap:12px;flex-wrap:wrap;margin-top:18px}
+.backup-status{min-height:20px;margin-top:12px;color:#2f7d4f;font-size:13px;font-weight:700}
+.backup-status.error{color:#b91c1c}
+@media(max-width:600px){.backup-actions{display:grid;grid-template-columns:1fr}.backup-actions button{width:100%}}
