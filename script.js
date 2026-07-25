@@ -9,6 +9,8 @@ let routeLayers = new Map();
 let currentView = 'home';
 let startEndMarkers = [];
 let mapResizeObserver = null;
+let elevationMapMarker = null;
+let elevationChartState = null;
 
 const $ = (id) => document.getElementById(id);
 
@@ -48,9 +50,17 @@ function bindInterface() {
   $('closeInfoIcon').addEventListener('click', closeRouteInfo);
   $('closeInfoPanel').addEventListener('click', closeRouteInfo);
   $('saveRouteDetails').addEventListener('click', saveRouteDetails);
-  $('infoColor').addEventListener('input', event => { $('infoColorValue').textContent = event.target.value.toUpperCase(); });
   $('routeInfoOverlay').addEventListener('click', event => {
     if (event.target === $('routeInfoOverlay')) closeRouteInfo();
+  });
+  const elevationCanvas = $('elevationChart');
+  elevationCanvas.addEventListener('mousemove', handleElevationPointer);
+  elevationCanvas.addEventListener('mouseleave', clearElevationPointer);
+  elevationCanvas.addEventListener('click', handleElevationPointer);
+  elevationCanvas.addEventListener('touchstart', handleElevationPointer, { passive: false });
+  elevationCanvas.addEventListener('touchmove', handleElevationPointer, { passive: false });
+  window.addEventListener('resize', () => {
+    if (window.currentRoute && !$('elevationSection').hidden) drawElevationProfile(window.currentRoute);
   });
 }
 
@@ -163,8 +173,7 @@ function normalizeRoutes(items) {
     favorite: route.favorite === true,
     notes: route.notes || '',
     hikeDate: route.hikeDate || '',
-    createdAt: route.createdAt || Date.now(),
-    durationSeconds: Number(route.durationSeconds) || 0
+    createdAt: route.createdAt || Date.now()
   })).sort((a, b) => b.createdAt - a.createdAt);
 }
 
@@ -204,8 +213,7 @@ function parseGPX(text, fileName) {
   const points = nodes.map(node => ({
     lat: Number(node.getAttribute('lat')),
     lon: Number(node.getAttribute('lon')),
-    ele: node.querySelector('ele') ? Number(node.querySelector('ele').textContent) : null,
-    time: node.querySelector('time')?.textContent?.trim() || null
+    ele: node.querySelector('ele') ? Number(node.querySelector('ele').textContent) : null
   })).filter(point => Number.isFinite(point.lat) && Number.isFinite(point.lon));
   if (points.length < 2) throw new Error('Percorso non valido');
 
@@ -217,8 +225,6 @@ function parseGPX(text, fileName) {
       elevationGain += points[i].ele - points[i - 1].ele;
     }
   }
-  const validTimes = points.map(point => point.time ? Date.parse(point.time) : NaN).filter(Number.isFinite);
-  const durationSeconds = validTimes.length >= 2 ? Math.max(0, Math.round((validTimes[validTimes.length - 1] - validTimes[0]) / 1000)) : 0;
   const nameNode = xml.querySelector('trk > name') || xml.querySelector('rte > name');
   return {
     name: nameNode?.textContent?.trim() || fileName.replace(/\.gpx$/i, ''),
@@ -226,7 +232,6 @@ function parseGPX(text, fileName) {
     points,
     distanceKm,
     elevationGain: Math.round(elevationGain),
-    durationSeconds,
     zone: `${points[0].lat.toFixed(2)}, ${points[0].lon.toFixed(2)}`
   };
 }
@@ -330,24 +335,16 @@ function openRouteInfo(route) {
   $('infoElevation').textContent = `${Math.round(route.elevationGain || 0)} m`;
   $('infoZone').textContent = route.zone || '-';
   $('infoFileName').textContent = route.fileName || '-';
-  const first = route.points?.[0];
-  const last = route.points?.[route.points.length - 1];
-  $('infoStart').textContent = formatCoordinate(first);
-  $('infoEnd').textContent = formatCoordinate(last);
-  $('infoDuration').textContent = formatDuration(route.durationSeconds);
-  const speed = route.durationSeconds > 0 ? Number(route.distanceKm) / (route.durationSeconds / 3600) : 0;
-  $('infoSpeed').textContent = speed > 0 ? `${speed.toFixed(1)} km/h` : 'Non disponibile';
-  $('infoColor').value = route.color || COLORS[0];
-  $('infoColorValue').textContent = (route.color || COLORS[0]).toUpperCase();
   $('infoDate').value = route.hikeDate || '';
   $('infoFavorite').checked = route.favorite === true;
   $('infoNotes').value = route.notes || '';
-  drawElevationProfile(route);
   $('routeInfoOverlay').hidden = false;
+  requestAnimationFrame(() => drawElevationProfile(route));
 }
 
 function closeRouteInfo() {
   $('routeInfoOverlay').hidden = true;
+  clearElevationPointer();
   window.currentRoute = null;
 }
 
@@ -357,7 +354,6 @@ async function saveRouteDetails() {
   route.hikeDate = $('infoDate').value;
   route.favorite = $('infoFavorite').checked;
   route.notes = $('infoNotes').value.trim();
-  route.color = $('infoColor').value;
   await dbPut(route);
   closeRouteInfo();
   renderAll();
@@ -395,6 +391,195 @@ function fitVisibleRoutes() {
   if (visible.length) setTimeout(() => map.fitBounds(L.featureGroup(visible).getBounds(), { padding: [40, 40], maxZoom: 16 }), 60);
 }
 
+
+function buildElevationData(route) {
+  if (!route || !Array.isArray(route.points)) return [];
+  const data = [];
+  let cumulativeKm = 0;
+  for (let index = 0; index < route.points.length; index += 1) {
+    const point = route.points[index];
+    if (index > 0) cumulativeKm += haversine(route.points[index - 1], point);
+    if (Number.isFinite(point.ele)) {
+      data.push({ index, distanceKm: cumulativeKm, elevation: point.ele, point });
+    }
+  }
+  return data;
+}
+
+function drawElevationProfile(route) {
+  const section = $('elevationSection');
+  const canvas = $('elevationChart');
+  const empty = $('elevationEmpty');
+  const help = section.querySelector('.elevation-help');
+  const data = buildElevationData(route);
+  section.hidden = false;
+  clearElevationPointer();
+
+  if (data.length < 2) {
+    canvas.hidden = true;
+    empty.hidden = false;
+    help.hidden = true;
+    $('elevationMin').textContent = '-';
+    $('elevationMax').textContent = '-';
+    elevationChartState = null;
+    return;
+  }
+
+  canvas.hidden = false;
+  empty.hidden = true;
+  help.hidden = false;
+  const minElevation = Math.min(...data.map(item => item.elevation));
+  const maxElevation = Math.max(...data.map(item => item.elevation));
+  const totalKm = Math.max(data[data.length - 1].distanceKm, 0.001);
+  $('elevationMin').textContent = `${Math.round(minElevation)} m`;
+  $('elevationMax').textContent = `${Math.round(maxElevation)} m`;
+
+  const rect = canvas.getBoundingClientRect();
+  const cssWidth = Math.max(300, Math.round(rect.width || canvas.parentElement.clientWidth || 500));
+  const cssHeight = 230;
+  const ratio = window.devicePixelRatio || 1;
+  canvas.width = Math.round(cssWidth * ratio);
+  canvas.height = Math.round(cssHeight * ratio);
+  canvas.style.height = `${cssHeight}px`;
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  ctx.clearRect(0, 0, cssWidth, cssHeight);
+
+  const padding = { left: 48, right: 16, top: 18, bottom: 34 };
+  const plotWidth = cssWidth - padding.left - padding.right;
+  const plotHeight = cssHeight - padding.top - padding.bottom;
+  const elevationRange = Math.max(maxElevation - minElevation, 20);
+  const yMin = minElevation - elevationRange * 0.08;
+  const yMax = maxElevation + elevationRange * 0.08;
+  const xFor = item => padding.left + (item.distanceKm / totalKm) * plotWidth;
+  const yFor = item => padding.top + (1 - (item.elevation - yMin) / (yMax - yMin)) * plotHeight;
+
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = '#dbe5df';
+  ctx.fillStyle = '#718078';
+  ctx.font = '12px Arial';
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  for (let tick = 0; tick <= 4; tick += 1) {
+    const y = padding.top + (plotHeight * tick) / 4;
+    const value = yMax - ((yMax - yMin) * tick) / 4;
+    ctx.beginPath();
+    ctx.moveTo(padding.left, y);
+    ctx.lineTo(cssWidth - padding.right, y);
+    ctx.stroke();
+    ctx.fillText(`${Math.round(value)} m`, padding.left - 7, y);
+  }
+
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  for (let tick = 0; tick <= 4; tick += 1) {
+    const x = padding.left + (plotWidth * tick) / 4;
+    const km = (totalKm * tick) / 4;
+    ctx.fillText(`${km.toFixed(totalKm < 10 ? 1 : 0)} km`, x, cssHeight - padding.bottom + 10);
+  }
+
+  const gradient = ctx.createLinearGradient(0, padding.top, 0, padding.top + plotHeight);
+  gradient.addColorStop(0, 'rgba(47, 125, 79, 0.38)');
+  gradient.addColorStop(1, 'rgba(47, 125, 79, 0.04)');
+  ctx.beginPath();
+  data.forEach((item, index) => {
+    const x = xFor(item);
+    const y = yFor(item);
+    if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.lineTo(xFor(data[data.length - 1]), padding.top + plotHeight);
+  ctx.lineTo(xFor(data[0]), padding.top + plotHeight);
+  ctx.closePath();
+  ctx.fillStyle = gradient;
+  ctx.fill();
+
+  ctx.beginPath();
+  data.forEach((item, index) => {
+    const x = xFor(item);
+    const y = yFor(item);
+    if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.strokeStyle = route.color || COLORS[0];
+  ctx.lineWidth = 3;
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  ctx.stroke();
+
+  elevationChartState = { canvas, ctx, data, cssWidth, cssHeight, padding, plotWidth, plotHeight, totalKm, yMin, yMax, xFor, yFor, route };
+}
+
+function handleElevationPointer(event) {
+  if (!elevationChartState) return;
+  if (event.cancelable) event.preventDefault();
+  const { canvas, data, padding, plotWidth, totalKm, xFor, yFor, route } = elevationChartState;
+  const rect = canvas.getBoundingClientRect();
+  const pointer = event.touches?.[0] || event.changedTouches?.[0] || event;
+  const localX = Math.max(padding.left, Math.min(rect.width - padding.right, pointer.clientX - rect.left));
+  const targetKm = ((localX - padding.left) / plotWidth) * totalKm;
+  let nearest = data[0];
+  let best = Math.abs(nearest.distanceKm - targetKm);
+  for (const item of data) {
+    const difference = Math.abs(item.distanceKm - targetKm);
+    if (difference < best) {
+      best = difference;
+      nearest = item;
+    }
+  }
+  drawElevationCursor(nearest);
+  showElevationPointOnMap(route, nearest.point);
+}
+
+function drawElevationCursor(item) {
+  const state = elevationChartState;
+  if (!state) return;
+  drawElevationProfile(state.route);
+  const refreshed = elevationChartState;
+  const { ctx, cssHeight, padding, xFor, yFor, canvas } = refreshed;
+  const x = xFor(item);
+  const y = yFor(item);
+  ctx.beginPath();
+  ctx.moveTo(x, padding.top);
+  ctx.lineTo(x, cssHeight - padding.bottom);
+  ctx.strokeStyle = '#1f2a24';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([4, 4]);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.beginPath();
+  ctx.arc(x, y, 5, 0, Math.PI * 2);
+  ctx.fillStyle = '#ffffff';
+  ctx.fill();
+  ctx.strokeStyle = refreshed.route.color || COLORS[0];
+  ctx.lineWidth = 3;
+  ctx.stroke();
+
+  const tooltip = $('elevationTooltip');
+  tooltip.innerHTML = `<strong>${Math.round(item.elevation)} m</strong><span>${item.distanceKm.toFixed(2)} km</span>`;
+  tooltip.hidden = false;
+  const tooltipWidth = 105;
+  tooltip.style.left = `${Math.max(6, Math.min(canvas.clientWidth - tooltipWidth - 6, x - tooltipWidth / 2))}px`;
+  tooltip.style.top = `${Math.max(4, y - 58)}px`;
+}
+
+function showElevationPointOnMap(route, point) {
+  if (!map || !point) return;
+  if (elevationMapMarker) map.removeLayer(elevationMapMarker);
+  elevationMapMarker = L.circleMarker([point.lat, point.lon], {
+    radius: 7,
+    color: '#ffffff',
+    weight: 3,
+    fillColor: route.color || COLORS[0],
+    fillOpacity: 1
+  }).addTo(map);
+}
+
+function clearElevationPointer() {
+  const tooltip = $('elevationTooltip');
+  if (tooltip) tooltip.hidden = true;
+  if (elevationMapMarker && map) map.removeLayer(elevationMapMarker);
+  elevationMapMarker = null;
+}
+
 function renderSettings() {
   $('settingsInfo').textContent = db ? 'Archivio locale attivo sul dispositivo.' : 'Archivio locale non disponibile.';
 }
@@ -407,113 +592,6 @@ function showMessage(text) {
   showMessage.timer = setTimeout(() => { box.hidden = true; }, 3500);
 }
 
-function formatCoordinate(point) {
-  if (!point || !Number.isFinite(point.lat) || !Number.isFinite(point.lon)) return '-';
-  return `${point.lat.toFixed(5)}, ${point.lon.toFixed(5)}`;
-}
-
-function formatDuration(seconds) {
-  const total = Number(seconds) || 0;
-  if (total <= 0) return 'Non disponibile';
-  const hours = Math.floor(total / 3600);
-  const minutes = Math.floor((total % 3600) / 60);
-  if (hours) return `${hours} h ${minutes} min`;
-  return `${minutes} min`;
-}
-
 function escapeHtml(value) {
   return String(value).replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[char]));
-}
-
-
-function drawElevationProfile(route) {
-  const canvas = $('elevationChart');
-  const empty = $('elevationEmpty');
-  const rangeLabel = $('elevationRange');
-  if (!canvas || !empty || !rangeLabel) return;
-
-  const samples = (route.points || [])
-    .map((point, index) => ({ index, ele: Number(point.ele) }))
-    .filter(sample => Number.isFinite(sample.ele));
-
-  if (samples.length < 2) {
-    canvas.hidden = true;
-    empty.hidden = false;
-    rangeLabel.textContent = 'Dati non disponibili';
-    return;
-  }
-
-  canvas.hidden = false;
-  empty.hidden = true;
-  const elevations = samples.map(sample => sample.ele);
-  const minEle = Math.min(...elevations);
-  const maxEle = Math.max(...elevations);
-  rangeLabel.textContent = `${Math.round(minEle)}–${Math.round(maxEle)} m`;
-
-  const ratio = Math.max(1, window.devicePixelRatio || 1);
-  const cssWidth = Math.max(300, canvas.clientWidth || 680);
-  const cssHeight = 220;
-  canvas.width = Math.round(cssWidth * ratio);
-  canvas.height = Math.round(cssHeight * ratio);
-  const ctx = canvas.getContext('2d');
-  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
-  ctx.clearRect(0, 0, cssWidth, cssHeight);
-
-  const pad = { left: 48, right: 16, top: 18, bottom: 34 };
-  const width = cssWidth - pad.left - pad.right;
-  const height = cssHeight - pad.top - pad.bottom;
-  const range = Math.max(1, maxEle - minEle);
-
-  ctx.strokeStyle = '#d9e4dd';
-  ctx.lineWidth = 1;
-  ctx.font = '12px Arial';
-  ctx.fillStyle = '#718078';
-  ctx.textAlign = 'right';
-  ctx.textBaseline = 'middle';
-  for (let i = 0; i <= 4; i += 1) {
-    const y = pad.top + (height * i / 4);
-    const value = maxEle - (range * i / 4);
-    ctx.beginPath();
-    ctx.moveTo(pad.left, y);
-    ctx.lineTo(cssWidth - pad.right, y);
-    ctx.stroke();
-    ctx.fillText(`${Math.round(value)} m`, pad.left - 8, y);
-  }
-
-  const pointToXY = (sample, position) => ({
-    x: pad.left + (width * position / Math.max(1, samples.length - 1)),
-    y: pad.top + height - ((sample.ele - minEle) / range) * height
-  });
-
-  ctx.beginPath();
-  samples.forEach((sample, index) => {
-    const { x, y } = pointToXY(sample, index);
-    if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-  });
-  ctx.lineTo(cssWidth - pad.right, pad.top + height);
-  ctx.lineTo(pad.left, pad.top + height);
-  ctx.closePath();
-  const gradient = ctx.createLinearGradient(0, pad.top, 0, pad.top + height);
-  gradient.addColorStop(0, 'rgba(47,125,79,.38)');
-  gradient.addColorStop(1, 'rgba(47,125,79,.05)');
-  ctx.fillStyle = gradient;
-  ctx.fill();
-
-  ctx.beginPath();
-  samples.forEach((sample, index) => {
-    const { x, y } = pointToXY(sample, index);
-    if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-  });
-  ctx.strokeStyle = route.color || COLORS[0];
-  ctx.lineWidth = 3;
-  ctx.lineJoin = 'round';
-  ctx.lineCap = 'round';
-  ctx.stroke();
-
-  ctx.fillStyle = '#718078';
-  ctx.textAlign = 'left';
-  ctx.textBaseline = 'top';
-  ctx.fillText('0 km', pad.left, cssHeight - 24);
-  ctx.textAlign = 'right';
-  ctx.fillText(`${Number(route.distanceKm || 0).toFixed(1)} km`, cssWidth - pad.right, cssHeight - 24);
 }
