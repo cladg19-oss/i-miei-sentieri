@@ -1,7 +1,8 @@
 const COLORS = ['#2f7d4f', '#d97706', '#2563eb', '#9333ea', '#dc2626', '#0891b2'];
 const DB_NAME = 'sentieriDB';
 const STORE_NAME = 'routes';
-
+const SUPABASE_URL = 'https://afczunizjfdyhsmfmvvp.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_kDxLRsC8d696HNCyQU6T-g_UP7wLJg4';
 let db = null;
 let map = null;
 let routes = [];
