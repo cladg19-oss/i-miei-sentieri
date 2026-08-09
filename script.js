@@ -3,6 +3,7 @@ const DB_NAME = 'sentieriDB';
 const STORE_NAME = 'routes';
 const SUPABASE_URL = 'https://afczunizjfdyhsmfmvvp.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_kDxLRsC8d696HNCyQU6T-g_UP7wLJg4';
+const cloud = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 let db = null;
 let map = null;
 let routes = [];
