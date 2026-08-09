@@ -3,7 +3,9 @@ const DB_NAME = 'sentieriDB';
 const STORE_NAME = 'routes';
 const SUPABASE_URL = 'https://afczunizjfdyhsmfmvvp.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_kDxLRsC8d696HNCyQU6T-g_UP7wLJg4';
-const cloud = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+const cloud = window.supabase?.createClient
+  ? window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY)
+  : null;
 let db = null;
 let map = null;
 let routes = [];
@@ -101,6 +103,10 @@ async function cloudLogout() {
 }
 
 async function initCloudAuth() {
+    if (!cloud) {
+    setCloudStatus('Cloud temporaneamente non disponibile', true);
+    return;
+  }
   const loginButton = $('cloudLoginButton');
   const logoutButton = $('cloudLogoutButton');
 
