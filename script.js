@@ -20,6 +20,110 @@ let discoverCandidate = null;
 let discoverLayers = [];
 
 const $ = (id) => document.getElementById(id);
+function setCloudStatus(message, error = false) {
+  const el = $('cloudStatus');
+  if (!el) return;
+
+  el.textContent = message;
+  el.dataset.state = error ? 'error' : 'ok';
+}
+
+function renderCloudSession(session) {
+  const loginButton = $('cloudLoginButton');
+  const logoutButton = $('cloudLogoutButton');
+  const emailInput = $('cloudEmail');
+  const passwordInput = $('cloudPassword');
+
+  if (!loginButton || !logoutButton) return;
+
+  if (session?.user) {
+    setCloudStatus(`☁️ Cloud connesso: ${session.user.email}`);
+    loginButton.hidden = true;
+    logoutButton.hidden = false;
+
+    if (emailInput) {
+      emailInput.value = session.user.email || '';
+      emailInput.disabled = true;
+    }
+
+    if (passwordInput) {
+      passwordInput.value = '';
+      passwordInput.disabled = true;
+    }
+  } else {
+    setCloudStatus('Cloud non connesso');
+    loginButton.hidden = false;
+    logoutButton.hidden = true;
+
+    if (emailInput) emailInput.disabled = false;
+    if (passwordInput) {
+      passwordInput.disabled = false;
+      passwordInput.value = '';
+    }
+  }
+}
+
+async function cloudLogin() {
+  const email = $('cloudEmail')?.value.trim();
+  const password = $('cloudPassword')?.value || '';
+
+  if (!email || !password) {
+    setCloudStatus('Inserisci email e password.', true);
+    return;
+  }
+
+  setCloudStatus('Connessione al cloud...');
+
+  const { data, error } = await cloud.auth.signInWithPassword({
+    email,
+    password
+  });
+
+  if (error) {
+    setCloudStatus(`Errore di accesso: ${error.message}`, true);
+    return;
+  }
+
+  renderCloudSession(data.session);
+}
+
+async function cloudLogout() {
+  setCloudStatus('Disconnessione...');
+
+  const { error } = await cloud.auth.signOut({ scope: 'local' });
+
+  if (error) {
+    setCloudStatus(`Errore: ${error.message}`, true);
+    return;
+  }
+
+  renderCloudSession(null);
+}
+
+async function initCloudAuth() {
+  const loginButton = $('cloudLoginButton');
+  const logoutButton = $('cloudLogoutButton');
+
+  if (!loginButton || !logoutButton) return;
+
+  loginButton.addEventListener('click', cloudLogin);
+  logoutButton.addEventListener('click', cloudLogout);
+
+  cloud.auth.onAuthStateChange((_event, session) => {
+    renderCloudSession(session);
+  });
+
+  const { data, error } = await cloud.auth.getSession();
+
+  if (error) {
+    setCloudStatus(`Errore Cloud: ${error.message}`, true);
+    return;
+  }
+
+  renderCloudSession(data.session);
+}
+
+initCloudAuth();
 
 function startApp() {
   bindInterface();
