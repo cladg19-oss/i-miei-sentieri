@@ -32,16 +32,18 @@ function setCloudStatus(message, error = false) {
 
 function renderCloudSession(session) {
   const loginButton = $('cloudLoginButton');
+  const syncButton = $('cloudSyncButton');
   const logoutButton = $('cloudLogoutButton');
   const emailInput = $('cloudEmail');
   const passwordInput = $('cloudPassword');
 
-  if (!loginButton || !logoutButton) return;
+ if (!loginButton || !logoutButton || !syncButton) return;
 
   if (session?.user) {
     setCloudStatus(`☁️ Cloud connesso: ${session.user.email}`);
     loginButton.hidden = true;
     logoutButton.hidden = false;
+    syncButton.hidden = false;
 
     if (emailInput) {
       emailInput.value = session.user.email || '';
@@ -53,6 +55,7 @@ function renderCloudSession(session) {
       passwordInput.disabled = true;
     }
   } else {
+    syncButton.hidden = true;
     setCloudStatus('Cloud non connesso');
     loginButton.hidden = false;
     logoutButton.hidden = true;
@@ -101,7 +104,174 @@ async function cloudLogout() {
 
   renderCloudSession(null);
 }
+function routeSyncKey(route) {
+  const points = Array.isArray(route.points) ? route.points : [];
+  const first = points[0] || {};
+  const last = points[points.length - 1] || {};
 
+  const coord = (value) => {
+    const n = Number(value);
+    return Number.isFinite(n) ? n.toFixed(5) : '';
+  };
+
+  const distance = Number(route.distanceKm || 0);
+
+  return [
+    route.fileName || route.name || '',
+    points.length,
+    Number.isFinite(distance) ? distance.toFixed(3) : '0',
+    coord(first.lat),
+    coord(first.lon),
+    coord(last.lat),
+    coord(last.lon)
+  ].join('|').toLowerCase();
+}
+
+function routeForCloud(route) {
+  const { id, ...copy } = route;
+
+  return {
+    ...copy,
+    _syncKey: routeSyncKey(route)
+  };
+}
+
+function cloudRowToRoute(row) {
+  let data = {};
+
+  try {
+    data = typeof row.gpx_data === 'string'
+      ? JSON.parse(row.gpx_data)
+      : (row.gpx_data || {});
+  } catch (error) {
+    console.error('Errore lettura GPX cloud:', error);
+  }
+
+  delete data.id;
+
+  return {
+    ...data,
+    name: data.name || row.nome || 'Percorso',
+    distanceKm: Number(data.distanceKm ?? row.distanza_km ?? 0),
+    elevationGain: Number(data.elevationGain ?? row.dislivello_m ?? 0),
+    favorite: data.favorite ?? row.preferito ?? false,
+    hikeDate: data.hikeDate || row.data_percorso || '',
+    visible: data.visible !== false,
+    notes: data.notes || '',
+    createdAt: data.createdAt ||
+      new Date(row.created_at || Date.now()).getTime()
+  };
+}
+
+async function cloudSyncNow() {
+  const syncButton = $('cloudSyncButton');
+
+  if (!cloud) {
+    setCloudStatus('Cloud non disponibile.', true);
+    return;
+  }
+
+  if (syncButton) syncButton.disabled = true;
+  setCloudStatus('☁️ Sincronizzazione in corso...');
+
+  try {
+    const {
+      data: { user },
+      error: userError
+    } = await cloud.auth.getUser();
+
+    if (userError || !user) {
+      throw new Error('Devi effettuare nuovamente l’accesso.');
+    }
+
+    const localRoutes = await dbGetAll();
+
+    const { data: remoteRows, error: remoteError } = await cloud
+      .from('Sentieri')
+      .select('id,created_at,user_id,nome,distanza_km,dislivello_m,gpx_data,completato,data_percorso,preferito')
+      .eq('user_id', user.id);
+
+    if (remoteError) throw remoteError;
+
+    const remoteByKey = new Map();
+
+    for (const row of remoteRows || []) {
+      const route = cloudRowToRoute(row);
+      const key = route._syncKey || routeSyncKey(route);
+
+      if (key) remoteByKey.set(key, row);
+    }
+
+    let uploaded = 0;
+    let downloaded = 0;
+
+    for (const route of localRoutes) {
+      const key = routeSyncKey(route);
+
+      if (remoteByKey.has(key)) continue;
+
+      const cloudRoute = routeForCloud(route);
+
+      const hikeDate =
+        typeof route.hikeDate === 'string' &&
+        /^\d{4}-\d{2}-\d{2}$/.test(route.hikeDate)
+          ? route.hikeDate
+          : null;
+
+      const { error } = await cloud
+        .from('Sentieri')
+        .insert({
+          user_id: user.id,
+          nome: route.name || route.fileName || 'Percorso',
+          distanza_km: Number(route.distanceKm || 0),
+          dislivello_m: Math.round(Number(route.elevationGain || 0)),
+          gpx_data: JSON.stringify(cloudRoute),
+          completato: Boolean(hikeDate),
+          data_percorso: hikeDate,
+          preferito: Boolean(route.favorite)
+        });
+
+      if (error) throw error;
+
+      remoteByKey.set(key, true);
+      uploaded += 1;
+    }
+
+    const localKeys = new Set(
+      localRoutes.map(route => routeSyncKey(route))
+    );
+
+    for (const row of remoteRows || []) {
+      const route = cloudRowToRoute(row);
+      const key = route._syncKey || routeSyncKey(route);
+
+      if (!key || localKeys.has(key)) continue;
+
+      delete route._syncKey;
+      route.id = await dbAdd(route);
+
+      localKeys.add(key);
+      downloaded += 1;
+    }
+
+    routes = normalizeRoutes(await dbGetAll());
+    renderAll();
+    fitVisibleRoutes();
+
+    setCloudStatus(
+      `☁️ Sincronizzazione completata — caricati ${uploaded}, scaricati ${downloaded}`
+    );
+
+  } catch (error) {
+    console.error('Errore sincronizzazione cloud:', error);
+    setCloudStatus(
+      `Errore sincronizzazione: ${error.message || error}`,
+      true
+    );
+  } finally {
+    if (syncButton) syncButton.disabled = false;
+  }
+}
 async function initCloudAuth() {
     if (!cloud) {
     setCloudStatus('Cloud temporaneamente non disponibile', true);
@@ -109,11 +279,13 @@ async function initCloudAuth() {
   }
   const loginButton = $('cloudLoginButton');
   const logoutButton = $('cloudLogoutButton');
+  const syncButton = $('cloudSyncButton');
 
-  if (!loginButton || !logoutButton) return;
+  if (!loginButton || !logoutButton || !syncButton) return;
 
   loginButton.addEventListener('click', cloudLogin);
   logoutButton.addEventListener('click', cloudLogout);
+  syncButton.addEventListener('click', cloudSyncNow);
 
   cloud.auth.onAuthStateChange((_event, session) => {
     renderCloudSession(session);
